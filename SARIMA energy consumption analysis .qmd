@@ -1,0 +1,564 @@
+---
+title: "Trabajo 2 Series"
+format: html
+editor: visual
+---
+
+### Autores:
+
+-   Juan Pablo Aldana Henao
+-   Jorge Andres Sanchez Duarte
+-   Daniel Mauricio Vanegas Oliveros
+
+# Introducción a Datos
+
+Este conjunto de datos es diferente al del trabajo anterior ya que al ser una serie bursátil, las cuales son difíciles de trabajar en esta área de Series de Tiempo; de esta manera, decidimos cambiarlo por una serie de tiempo extraída de [Kaggle](https://www.kaggle.com/datasets/shenba/electricity-production), la cual a su ves es extraída de **Federal Reserve Bank of St.Louis (FRED)** (para origen de la información, revisar referencias al final del documento), en la que se muestra el producción energética (tanto eléctrica como de gas) mensual de los EEUU entre el primer mes de 1985 y 2025, conformándose de 480 observaciones que nos permitirán trabajar modelos SARIMA.
+
+Las observaciones corresponden al **Índice IPG2211A2N**, este índice hace parte del indice de producción industrial de EEUU, midiendo la producción real (no ingresos) combinada entre los sectores públicos eléctricos y de gas. Estos son reportes (observaciones) mensuales. La propia **FRED** señala que estos datos explican la mayor parte de la economía estadounidense (esto porque existe una correlación fuerte entre consumo eléctrico y PIB). El índice tiene su metodología de construcción que pondera los cambios en producción según el aporte y valor agregado de cada sector; las mediciones se realizan mediante variables cuantitativas consideradas como kWh (producción de electricidad) o volúmen de gas. En caso de datos faltantes usan variables relacionadas para su estimación e imputación (denominadas por ellos como variables proxys).
+
+Ahora, es de hacerse notar que la serie transcurre en períodos significativamente importantes para la economía estadounidense, particularmente el 2008 en el que ocurrió la crisis financiera y la pandemia de 2020. Para evitar problemas de estimación (con los que nos encontramos al trabajar la serie desde 1985 hasta 2025) decidimos tomar en cuenta un período de 20 años, es decir 240 meses entre 1985 y 2005, que sería un período sin tantos eventos significativos para la economia estadounidense (salvo los atentados del 11 de septiembre de 2001) pero con suficiente cantidad de datos para hallar estacionalidad.
+
+El objetivo de este trabajo es identificar modelos estacionales capaces de explicar series de tiempo con una considerable cantidad de observaciones, a su vez de verificar la necesidad sobre modelos más complejos para objener mejores estimaciones.
+
+En el siguiente gráfico se puede apreciar el comportamiento total de la serie:
+
+```{r, echo = FALSE}
+suppressMessages(library(forecast))
+suppressMessages(library(tseries))
+suppressMessages(library(FinTS))
+suppressMessages(library(ggplot2))
+suppressMessages(library(TSA))
+suppressMessages(library(knitr))
+setwd("C:/Users/thetr/OneDrive/Documentos/R/series")
+dt = read.csv("Electric_Production.csv",  sep = ",")
+dt$IPG2211A2N = as.numeric(dt$IPG2211A2N)
+serie = dt$IPG2211A2N
+serie = serie[1:240]
+adj = function(estimados, reales){
+  rmse = sqrt(mean((reales - estimados)^2))
+  mae = mean(abs(reales - estimados))
+  return(c(rmse,mae))
+}
+```
+
+```{r}
+plot.ts(serie, main = "Gráfico de la Serie", xlab = "Meses", ylab = "Producción Eléctrica")
+```
+
+Y a continuación podemos apreciar ambos Autocorrelograma y Autocorrelograma Parcial:
+
+```{r}
+par(mfrow = c(1,2))
+acf(serie, main = "Autocorrelograma")
+pacf(serie, main = "Autocorrelograma Parcial")
+par(mfrow = c(1,1))
+```
+
+Desde los cuales ya podemos sospechar la presencia de estacionaliedad en el gráfico de autocorrelograma. Note particularmente que el decimotercer mes está bajo la aucorrelación parcial negativa y significativa; ello implicaría que la producción eléctrica está ligada a la de un año inmediatamente anterior. De esta forma, se podrían considerar dos modelos; uno que sea el indicado directamente por el comando **auto.arima** y otro bajo este comportamiento anual de la serie. Ahora procedemos a revisar la estacionariedad de la misma bajo diferentes transformaciones:
+
+```{r,warning=FALSE}
+adf.test(serie)
+```
+
+```{r,warning=FALSE}
+adf.test(log(serie))
+```
+
+```{r,warning=FALSE}
+adf.test(diff(serie))
+```
+
+```{r,warning=FALSE}
+adf.test(diff(log(serie)))
+```
+
+De lo que podemos concluir que en general no será una serie que nos implique problemas para trabajar bajo modelos estacionarios.
+
+# Modelos
+
+Se considerarán los siguientes tres modelos:
+
+### Modelo de Auto.Arima
+
+Un acercamiento básico con el que podemos tener una idea inicial de la estructura del modelo es bajo comandos básicos de **auto.arima**, este modelo es solamente un acercamiento para construir modelos mas complejos (que eventualmente considerarán el uso de estacionariedad). Para ello, ejecutamos el siguiente comando:
+
+```{r}
+auto.arima(serie)
+m.auto = Arima(serie,
+              order = c(5,1,0))
+summary(m.auto)
+```
+
+Este comando arroja dos posibles modelos, pero en el desarrollo del trabajo notamos que acercamientos donde se tomaban en cuenta solamente términos autorregresivos presentaban mejores resultados a la hora de pasar a modelos estacionarios. De esta forma, nos quedamos con el modelo ARIMA(5,1,0). Note que en este modelo solamente los términos autorregresivos de orden 2, 3, y 4 se muestran como estadísticamente significativos para una significancia de $\alpha = 0.05$ (es decir, asumiendo un $z_{0.975}\approx 1.96$. Procedemos a revisar los supuestos:
+
+#### Autocorrelacion de Resíduos
+
+```{r}
+Box.test(m.auto$residuals)
+```
+
+En el que no existe una autocorrelación significativa para los residuales. No aplicamos un lag de 12 meses ya que este supuesto no hace parte de la estimación del modelo. Revisando los gráficos ACF y PACF de los residuales:
+
+```{r}
+par(mfrow = c(1,2))
+acf(m.auto$residuals)
+pacf(m.auto$residuals)
+```
+
+Se concluye que este modelo tal vez no sea un buen acercamiento capturando el comportamiento de la serie.
+
+#### Normalidad
+
+```{r}
+shapiro.test(m.auto$residuals)
+jarque.bera.test(m.auto$residuals)
+```
+
+Por lo que no rechazamos normalidad de los resíduos de este modelo.
+
+#### Homocedasticidad (ARCH)
+
+```{r}
+ArchTest(m.auto$residuals)
+```
+
+Con la que se puede rechazar la hipótesis de homocedasticidad. Verificando con una graficación de los residuales:
+
+```{r}
+plot(m.auto$residuals)
+```
+
+Se puede notar que efectivamente la varianza no es constante a lo largo de los residuales estimados. Esto muestra que el modelo no debería ser tomado en cuenta mas allá que como una primera aproximación sobre el comportamiento de los datos.
+
+```{r, echo=FALSE}
+A = AIC(m.auto);B = BIC(m.auto);L =logLik(m.auto)[1]
+```
+
+#### Ajuste
+
+```{r}
+ajuste1 = fitted(m.auto)  # valores ajustados
+
+df = data.frame(
+  tiempo = time(serie),
+  real   = as.numeric(serie),
+  ajuste = as.numeric(ajuste1)
+)
+
+ggplot(df, aes(x = tiempo)) +
+  geom_line(aes(y = real), color = "black") +
+  geom_line(aes(y = ajuste), color = "blue") +
+  ggtitle("Datos reales vs Ajuste del modelo") +
+  ylab("Producción Eléctrica") + 
+  xlab("Meses")
+```
+
+Otra verificación sobre el comportamiento del modelo es comparar su ACF y PACF con el de la serie original. De esta manera:
+
+```{r}
+par(mfrow = c(2,2))
+acf(ajuste1, main = "ACF Modelo")
+pacf(ajuste1, main = "PACF Modelo")
+acf(serie, main = "ACF Serie Original")
+pacf(serie, main = "PACF Serie Original")
+```
+
+Se puede ver en el PACF que pasado el cuarto rezago el modelo empieza a presentar fallas con respecto a la estimación. En cambio, en el ACF se presenta un comportamiento bastante similar.
+
+### Modelo Estacional
+
+Tomando en cuenta los resultados anteriores, consideramos que un modelo con estacionaliedad de 12 meses podría resolver la mayoría de los problemas que este tiene. Dada la significancia de los rezagos en el PACF, se tomará también en cuenta un rezago de observaciones de orden 4. De esta forma:
+
+```{r, error=FALSE}
+serie = ts(serie, frequency = 12)
+```
+
+```{r, warning=FALSE}
+m.est = arima(serie,
+              order = c(4,1,0),
+              seasonal = list(order = c(0,1,1), period = 12))
+summary(m.est)
+```
+
+Note que las métricas de entrenamiento no se muestran, de todas formas vamos a calcular manualmente RMSE y MAE (por ser a las que más estamos familiarizados) al final del documento en el apartado de selección de modelos. Procedemos a verificar los redíduos con sus supuestos:
+
+#### Autocorrelacion
+
+Ya que este modelo tiene un componente estacional, debemos agregar un lag de 12 meses. Realizando la prueba de autocorrelación de los mismos:
+
+```{r}
+Box.test(m.est$residuals, lag = 12)
+```
+
+Se puede concluir que no existe una autocorrelación significativa de los resíduos en este modelo. Revisando los gráficos ACF y PACF de los residuales:
+
+```{r}
+par(mfrow = c(1,2))
+acf(m.est$residuals)
+pacf(m.est$residuals)
+```
+
+Se ve que mejora bastante comparado con los del modelo anterior. La significancia de esta autocorrelación es bastante baja, y guiándonos por el estadístico de la prueba Box, es prudente considerar que los residuales no tienen autocorrelación significativa.
+
+#### Normalidad
+
+```{r}
+shapiro.test(m.est$residuals)
+jarque.bera.test(m.est$residuals)
+```
+
+No rechazamos normalidad de los resíduos de este modelo.
+
+#### Homocedasticidad (ARCH)
+
+```{r}
+ArchTest(m.est$residuals)
+```
+
+Con esta prueba se puede ver que este modelo es homocedástico, y verificando con el gráfico de residuales:
+
+```{r}
+plot(m.est$residuals)
+```
+
+Es difícil tener certeza sobre este resultado, pero dada la significancia de la prueba podemos confiar en la misma.
+
+#### Ajuste
+
+```{r}
+ajuste2 = fitted(m.est)  # valores ajustados
+
+df = data.frame(
+  tiempo = time(serie),
+  real   = as.numeric(serie),
+  ajuste = as.numeric(ajuste2)
+)
+
+ggplot(df, aes(x = tiempo)) +
+  geom_line(aes(y = real), color = "black") +
+  geom_line(aes(y = ajuste), color = "blue") +
+  ggtitle("Datos reales vs Ajuste del modelo") +
+  ylab("Producción Eléctrica") + 
+  xlab("Meses")
+```
+
+Este modelo parece ajustarse mejor al anterior. Verificando con los diagramas de autocorrelación:
+
+```{r}
+par(mfrow = c(2,2))
+acf(ajuste2, main = "ACF Modelo")
+pacf(ajuste2, main = "PACF Modelo")
+acf(serie, main = "ACF Serie Original")
+pacf(serie, main = "PACF Serie Original")
+```
+
+Se notará mediante el PACF que adicionar un componente estacional brinda una mejor estimación para estos datos.
+
+### Modelo Estacional con Logaritmo
+
+A pesar de que el modelo anterior se muestre bastante sólido, tambien deben considerarse acercamientos que puedan estabilizar la varianza de las series; un método de ello es aplicarles logaritmo. De esta manera procedemos con este modelo:
+
+```{r, error=FALSE, warning=FALSE}
+serieL = ts(log(serie), frequency = 12)
+m.est.log1 = arima(serieL,
+              order = c(4,1,0),
+              seasonal = list(order = c(0,1,1), period = 12))
+summary(m.est.log1)
+```
+
+Se puede notar que los términos autorregresivos de orden 3 y 4 ya no son significativos, pero el término de primer orden en este caso sí lo es. Dado que estos datos corresponden a grandes escalas de producción, es un poco ingenuo considerar que el índice en cuestión se pueda ver afectado por cambios relacionados al mes anterior. Cambiando el modelo por uno mas simple:
+
+```{r, error=FALSE, warning=FALSE}
+serieL = ts(log(serie), frequency = 12)
+m.est.log = arima(serieL,
+              order = c(2,1,0),
+              seasonal = list(order = c(0,1,1), period = 12))
+summary(m.est.log)
+```
+
+Se ve que el AIC y log-verosimilitud se han reducido ligeramente. Procedemos a realizar un test de verosimilitudes para verificar si hay diferencias significativas entre ambos modelos. Como no encontramos una función que nos compare mediante MLE, decidimos crear una prueba bajo el supuesto de que esta diferencia de verosimilitudes sigue una distribución chi cuadrado.
+
+```{r}
+lrt = 2 * (logLik(m.est.log1) - logLik(m.est.log))
+(p   = pchisq(lrt,
+              df = attr(logLik(m.est.log1),
+                        "df") - attr(logLik(m.est.log), "df"), lower.tail = FALSE))
+```
+
+Por lo que encontramos que no existen diferencias significativas entre ambos modelos para un $\alpha = 0.05$, pero al ser este valor $p$ tan bajo, no tener términos significativos de mayor orden, y buscar un modelo parsimonioso, decidimos quedarnos con el segundo modelo.
+
+#### Autocorrelacion
+
+```{r}
+Box.test(m.est.log$residuals, lag = 12)
+```
+
+Bajo logaritmo podemos rechazar la hipótesis de no autocorrelación en los residuales. Revisando los gráficos ACF y PACF de los residuales:
+
+```{r}
+par(mfrow = c(1,2))
+acf(m.est.log$residuals)
+pacf(m.est.log$residuals)
+```
+
+Se ve que los residuales muestran una autocorrelación mas significativa que el anterior modelo, confirmando el resultado de la prueba Box.
+
+#### Normalidad
+
+```{r}
+shapiro.test(m.est.log$residuals)
+jarque.bera.test(m.est.log$residuals)
+```
+
+Sigue sin rechazarse la normalidad en los resíduos de los modelos estacionales.
+
+#### Homocedasticidad (ARCH)
+
+```{r}
+ArchTest(m.est.log$residuals)
+```
+
+Con este test se puede ver que la homocedasticidad de los residuales se mantiene. Revisando la graficación de estos:
+
+```{r}
+plot(m.est.log$residuals)
+```
+
+Se puede ver que hay ciertos valles donde la serie en efecto sigue teniendo una varianza explicable por el tiempo pero es mucho mas estable comparada con la del anterior modelo, por lo que tomar logaritmo fue una desición acertada.
+
+#### Ajuste
+
+```{r}
+ajuste3 = fitted(m.est.log)  # valores ajustados
+
+df = data.frame(
+  tiempo = time(serie),
+  real   = as.numeric(log(serie)),
+  ajuste = as.numeric(ajuste3)
+)
+
+ggplot(df, aes(x = tiempo)) +
+  geom_line(aes(y = real), color = "black") +
+  geom_line(aes(y = ajuste), color = "blue") +
+  ggtitle("Datos reales vs Ajuste del modelo") +
+  ylab("Producción Eléctrica (Logaritmo)") + 
+  xlab("Meses")
+```
+
+No parece haber una mejoría respecto al anterior, y revisando los autocorrelogramas:
+
+```{r}
+par(mfrow = c(2,2))
+acf(ajuste3, main = "ACF Modelo")
+pacf(ajuste3, main = "PACF Modelo")
+acf(serie, main = "ACF Serie Original")
+pacf(serie, main = "PACF Serie Original")
+```
+
+Se puede concluir que el modelo sin logaritmo parecía tener mejor PACF que este.
+
+# Pronóstico
+
+## Modelo de Auto.Arima
+
+```{r,echo=FALSE}
+
+m.auto = Arima(serie,
+              order = c(4,1,0),
+              seasonal = list(order = c(1,1,1), period = 12))
+fit = m.auto
+
+h = 12
+fc <- forecast(fit, h = h)
+
+
+df_fc <- data.frame(
+  fecha = time(fc$mean),
+  mean = as.numeric(fc$mean),
+  lo80 = as.numeric(fc$lower[,1]),
+  hi80 = as.numeric(fc$upper[,1]),
+  lo95 = as.numeric(fc$lower[,2]),
+  hi95 = as.numeric(fc$upper[,2])
+)
+df_orig <- data.frame(
+  fecha = time(serie),
+  valor = as.numeric(serie)
+)
+library(ggplot2)
+
+ggplot() +
+  # Serie original
+  geom_line(data = df_orig,
+            aes(x = fecha, y = valor),
+            color = "black") +
+  
+  # Banda 95%
+  geom_ribbon(data = df_fc,
+              aes(x = fecha, ymin = lo95, ymax = hi95),
+              alpha = 0.15, fill = "blue") +
+  
+  # Banda 80%
+  geom_ribbon(data = df_fc,
+              aes(x = fecha, ymin = lo80, ymax = hi80),
+              alpha = 0.25, fill = "blue") +
+  
+  # Pronóstico
+  geom_line(data = df_fc,
+            aes(x = fecha, y = mean),
+            color = "blue", linewidth = 1) +
+  
+  labs(title = "Pronóstico auto.ARIMA",
+       x = "Meses",
+       y = "Producción Eléctrica") +
+  theme_minimal()
+
+
+
+```
+
+## Modelo SARIMA
+
+```{r,echo=FALSE}
+
+m.est = Arima(serie,
+              order = c(4,1,0),
+              seasonal = list(order = c(0,1,1), period = 12))
+m.est.log = Arima(serieL,
+              order = c(2,1,0),
+              seasonal = list(order = c(0,1,1), period = 12))
+fit = m.est
+
+h = 12
+fc <- forecast(fit, h = h)
+
+
+df_fc <- data.frame(
+  fecha = time(fc$mean),
+  mean = as.numeric(fc$mean),
+  lo80 = as.numeric(fc$lower[,1]),
+  hi80 = as.numeric(fc$upper[,1]),
+  lo95 = as.numeric(fc$lower[,2]),
+  hi95 = as.numeric(fc$upper[,2])
+)
+df_orig <- data.frame(
+  fecha = time(serie),
+  valor = as.numeric(serie)
+)
+library(ggplot2)
+
+ggplot() +
+  # Serie original
+  geom_line(data = df_orig,
+            aes(x = fecha, y = valor),
+            color = "black") +
+  
+  # Banda 95%
+  geom_ribbon(data = df_fc,
+              aes(x = fecha, ymin = lo95, ymax = hi95),
+              alpha = 0.15, fill = "blue") +
+  
+  # Banda 80%
+  geom_ribbon(data = df_fc,
+              aes(x = fecha, ymin = lo80, ymax = hi80),
+              alpha = 0.25, fill = "blue") +
+  
+  # Pronóstico
+  geom_line(data = df_fc,
+            aes(x = fecha, y = mean),
+            color = "blue", linewidth = 1) +
+  
+  labs(title = "Pronóstico SARIMA",
+       x = "Meses",
+       y = "Producción Eléctrica") +
+  theme_minimal()
+
+
+
+```
+
+## Modelo SARIMA con Logaritmo
+
+```{r,echo=FALSE}
+fit = m.est.log
+
+h = 12
+fc <- forecast(fit, h = h)
+
+
+df_fc <- data.frame(
+  fecha = time(fc$mean),
+  mean = as.numeric(fc$mean),
+  lo80 = as.numeric(fc$lower[,1]),
+  hi80 = as.numeric(fc$upper[,1]),
+  lo95 = as.numeric(fc$lower[,2]),
+  hi95 = as.numeric(fc$upper[,2])
+)
+df_orig <- data.frame(
+  fecha = time(serie),
+  valor = as.numeric(serieL)
+)
+library(ggplot2)
+
+ggplot() +
+  # Serie original
+  geom_line(data = df_orig,
+            aes(x = fecha, y = valor),
+            color = "black") +
+  
+  # Banda 95%
+  geom_ribbon(data = df_fc,
+              aes(x = fecha, ymin = lo95, ymax = hi95),
+              alpha = 0.15, fill = "blue") +
+  
+  # Banda 80%
+  geom_ribbon(data = df_fc,
+              aes(x = fecha, ymin = lo80, ymax = hi80),
+              alpha = 0.25, fill = "blue") +
+  
+  # Pronóstico
+  geom_line(data = df_fc,
+            aes(x = fecha, y = mean),
+            color = "blue", linewidth = 1) +
+  
+  labs(title = "Pronóstico SARIMA con Logaritmo",
+       x = "Meses",
+       y = "Producción Eléctrica") +
+  theme_minimal()
+
+
+
+```
+
+# Selección e Interpretación del Modelo
+
+## Selección
+
+Mediante la siguiente tabla de métricas:
+
+```{r, echo = FALSE}
+a1 = c(adj(as.numeric(ajuste1), as.numeric(serie)),A, B, L)
+a2 = c(adj(as.numeric(ajuste2), as.numeric(serie)),AIC(m.est),BIC(m.est), logLik(m.est)[1])
+a3 = c(exp(adj(ajuste3, log(serie))),-AIC(m.est.log),-BIC(m.est.log),-logLik(m.est.log)[1])
+tabla = rbind(a1,a2,a3); colnames(tabla) = c("RMSE","MAE","AIC","BIC", "LL")
+rownames(tabla) = c("Modelo bajo función auto.arima()", "Modelo SARIMA", "Modelo SARIMA con Logaritmo")
+kable(tabla)
+
+```
+
+Podemos concluir que un acercamiento estacionario es el más acertado en métricas de error. El modelo estacional con logaritmo muestra las mejores métricas de error, pero note que se saltaba un supuesto y no respondía igual de bien en el PACF al modelo estacional. A pesar de su mejor precisión y mayor verosimilitud, decidimos quedarnos con el segundo modelo.
+
+## Interpretación
+
+El comportamiento del índice de energía estadounidense entre 1985 y 2005 está determinada por el siguiente modelo: $$ \text{ARIMA}(4,1,0)\times(0,1,1)_{12}$$ Es decir que este índice, muestra que existe un ciclo presente en el desarrollo anual de la economía de este país; donde los cambios absolutos (presentes mediante la diferenciación) se ven explicados según los cuatro períodos inmediatamente anteriores al actual. Es de notarse que al ser estos términos negativos, se podría concluir que los cambios económicos se ven muy amortiguados mes a mes; es decir, aumentos o reducciones significativas en este índice siempre irán seguidos de una reducción o aumento (respectivamente) en la siguiente medición, teniendo efecto durante cuatro períodos seguidos.
+
+A su vez, los cambios presentes de año a año señalan que el ruido estacional viene explicado por el año anterior, tal vez compensando cambios inesperados (shocks) entre ambos períodos de tiempo. Lo que indica que la economía es estable mes a mes pero no de año a año; en otras palabras, los cambios económicos a gran escala se notarán de forma significativa pasados períodos extensos de tiempo.
+
+# Referencias
+
+-   Board of Governors of the Federal Reserve System. (n.d.). *Industrial Production: Electric and Gas Utilities (NAICS 2211,2) \[IPG2211A2N\]*. FRED, Federal Reserve Bank of St. Louis. <https://fred.stlouisfed.org/data/IPG2211A2N>
+
+-   Federal Reserve Board. (n.d.). *Industrial Production and Capacity Utilization: Methodology*. <https://www.federalreserve.gov/releases/g17/Meth/MethIP.html>
+
+-   Investopedia. (n.d.). *Cyclical industry*. <https://www.investopedia.com/terms/c/cyclical_industry.asp>
+
+-   Federal Reserve Bank of St. Louis. (s.f.). *Industrial Production: Electric Power Generation, Transmission, and Distribution (IPG2211A2N). FRED, Federal Reserve Bank of St. Louis.* <https://fred.stlouisfed.org/series/IPG2211A2N>
